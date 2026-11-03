@@ -1,0 +1,66 @@
+name: Uzum soatlik
+
+on:
+  schedule:
+    - cron: "7 2-18 * * *"   # UTC: Toshkent bo'yicha 07:07–23:07, har soat
+  workflow_dispatch: {}      # qo'lda ishga tushirish tugmasi
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pult
+  cancel-in-progress: false
+
+env:
+  UZUM_SA_TIMSON: ${{ secrets.UZUM_SA_TIMSON }}
+  UZUM_CLEO: ${{ secrets.UZUM_CLEO }}
+  TG_TOKEN: ${{ secrets.TG_TOKEN }}
+  TG_CHAT: ${{ secrets.TG_CHAT }}
+  TANNARX_URL: ${{ secrets.TANNARX_URL }}
+  WB_TANNARX_URL: ${{ secrets.WB_TANNARX_URL }}
+  PULT_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Kutubxonalar
+        run: |
+          pip install -q -r requirements.txt
+          test -f /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf || (sudo apt-get update -qq && sudo apt-get install -y -qq fonts-dejavu-core)
+      - name: Tayyorlash
+        run: bash ci/prepare.sh
+
+      - name: Soatlik hisobot (Telegram)
+        run: |
+          python3 ~/h.py | tee h.log
+          grep -q "^TELEGRAM: yuborildi" h.log || { echo "::error::Telegram'ga yuborilmadi"; exit 1; }
+
+      - name: Pult'ga bugungi buyurtmalar
+        if: always()
+        run: python3 ci/keep.py ~/dash/today.json _site/today.json
+      - uses: actions/configure-pages@v5
+        if: always()
+      - uses: actions/upload-pages-artifact@v3
+        if: always()
+        with:
+          path: _site
+      - id: deploy
+        if: always()
+        uses: actions/deploy-pages@v4
+
+      - name: Xato bo'lsa Telegram'ga xabar
+        if: failure()
+        run: bash ci/tg_alert.sh "Uzum soatlik hisobot ishlamadi (GitHub)"
