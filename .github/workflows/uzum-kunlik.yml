@@ -1,0 +1,109 @@
+name: Uzum kunlik
+
+on:
+  schedule:
+    - cron: "40 2 * * *"   # UTC: Toshkent bo'yicha 07:40 (GitHub 5–15 daqiqa kechiktirishi mumkin)
+  workflow_dispatch: {}
+
+permissions:
+  contents: write          # hisobotlar/ papkasiga kunlik matnni saqlash uchun
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pult
+  cancel-in-progress: false
+
+env:
+  UZUM_SA_TIMSON: ${{ secrets.UZUM_SA_TIMSON }}
+  UZUM_CLEO: ${{ secrets.UZUM_CLEO }}
+  WB_CLEO: ${{ secrets.WB_CLEO }}
+  WB_NASIROV: ${{ secrets.WB_NASIROV }}
+  TG_TOKEN: ${{ secrets.TG_TOKEN }}
+  TG_CHAT: ${{ secrets.TG_CHAT }}
+  TANNARX_URL: ${{ secrets.TANNARX_URL }}
+  WB_TANNARX_URL: ${{ secrets.WB_TANNARX_URL }}
+  PULT_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Kutubxonalar
+        run: |
+          pip install -q -r requirements.txt
+          test -f /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf || (sudo apt-get update -qq && sudo apt-get install -y -qq fonts-dejavu-core)
+      - name: Tayyorlash
+        run: |
+          bash ci/prepare.sh
+          test -s _site/state.json && cp _site/state.json ~/state.json || echo "state.json yo'q (birinchi ishga tushirish)"
+
+      # Har qadam xato bersa ham keyingisi bajariladi; oxirida umumiy natija tekshiriladi
+      - name: Uzum hisobi
+        id: uzum
+        continue-on-error: true
+        run: cd ~ && python3 d.py --no-tg
+      - name: WB kunlik
+        id: wbd
+        continue-on-error: true
+        run: cd ~ && python3 wb_report.py daily --no-tg
+      - name: WB dashboard
+        id: wbdash
+        continue-on-error: true
+        run: cd ~ && python3 wb_report.py dash
+      - name: Uzum dashboard
+        id: dash
+        continue-on-error: true
+        run: cd ~ && python3 dash_data.py
+      - name: Telegram qisqa hisobot
+        id: brief
+        continue-on-error: true
+        run: |
+          cd ~ && python3 brief.py | tee brief.log
+          grep -q "^TELEGRAM: yuborildi" brief.log
+
+      - name: Pult fayllarini yig'ish
+        if: always()
+        run: |
+          for f in data.json imgs.json wb.json; do python3 ci/keep.py ~/dash/$f _site/$f; done
+          python3 ci/keep.py ~/state_new.json _site/state.json
+      - uses: actions/configure-pages@v5
+        if: always()
+      - uses: actions/upload-pages-artifact@v3
+        if: always()
+        with:
+          path: _site
+      - id: deploy
+        if: always()
+        uses: actions/deploy-pages@v4
+
+      - name: Kunlik matnni repoga saqlash (Obsidian o'rniga)
+        if: always()
+        continue-on-error: true
+        run: |
+          test -s ~/report.md || exit 0
+          D=$(TZ=Asia/Tashkent date -d yesterday +%F)
+          cp ~/report.md "hisobotlar/$D Uzum kunlik.md"
+          git config user.name "uzum-bot"; git config user.email "uzum-bot@users.noreply.github.com"
+          git add hisobotlar && git commit -qm "Kunlik hisobot $D" && git push -q || true
+
+      - name: Natija
+        if: always()
+        run: |
+          F=""
+          [ "${{ steps.uzum.outcome }}" = success ] || F="$F Uzum-hisob"
+          [ "${{ steps.wbd.outcome }}" = success ] || F="$F WB-kunlik"
+          [ "${{ steps.wbdash.outcome }}" = success ] || F="$F WB-dashboard"
+          [ "${{ steps.dash.outcome }}" = success ] || F="$F Uzum-dashboard"
+          [ "${{ steps.brief.outcome }}" = success ] || F="$F Telegram"
+          [ "${{ steps.deploy.outcome }}" = success ] || F="$F Pult-sayt"
+          if [ -n "$F" ]; then bash ci/tg_alert.sh "Uzum kunlik: ishlamagan qadamlar:$F"; exit 1; fi
